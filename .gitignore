@@ -46,6 +46,7 @@
 *.pdb
 build/
 .cache/
+.vscode/
 # Kernel Module Compile Results
 *.mod*
 *.cmd
