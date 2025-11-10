@@ -1,11 +1,12 @@
 #include "utils.h"
+#include "bunshell.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-void insert_char(char *buffer, int *len, int *cursorPos, char c) {
+void shell_insert_char(char *buffer, int *len, int *cursorPos, char c) {
   memmove(&buffer[*cursorPos + 1], &buffer[*cursorPos], *len - *cursorPos);
   buffer[*cursorPos] = c;
   (*len)++;
@@ -16,7 +17,7 @@ void insert_char(char *buffer, int *len, int *cursorPos, char c) {
   fflush(stdout);
 }
 
-void backspace(char *buffer, int *index, int *cursor) {
+void shell_backspace(char *buffer, int *index, int *cursor) {
   if (*cursor == 0 || *index == 0)
     return;
 
@@ -42,7 +43,7 @@ void backspace(char *buffer, int *index, int *cursor) {
   }
 }
 
-void del(char *buffer, int *index, int *cursor) {
+void shell_delete(char *buffer, int *index, int *cursor) {
   if (*cursor >= *index)
     return;
   memmove(&buffer[*cursor], &buffer[*cursor + 1], *index - *cursor);
@@ -58,7 +59,7 @@ void del(char *buffer, int *index, int *cursor) {
   fflush(stdout);
 }
 
-char *read_input_raw() {
+char *shell_read_input(cmd_history *history) {
   int index = 0;
   int bufferSize = 1024;
   int cursorPosition = 0;
@@ -70,19 +71,23 @@ char *read_input_raw() {
   }
 
   char c;
+
   while (read(STDIN_FILENO, &c, 1) == 1) {
+    // ENTER
     if (c == '\r' || c == '\n') {
       write(STDOUT_FILENO, "\r\n", 2);
       break;
     }
 
     if (c == 127 || c == 8) {
-      backspace(buffer, &index, &cursorPosition);
+      shell_backspace(buffer, &index, &cursorPosition);
       continue;
     }
 
     if (c == 3) {
-      exit(1);
+      free_history(history);
+      free(buffer);
+      exit(0);
     }
 
     if (c == 27) {
@@ -93,16 +98,66 @@ char *read_input_raw() {
         continue;
 
       if (seq[0] == '[') {
-        if (seq[1] == 'C' && cursorPosition < index) {
-          cursorPosition++;
-          write(STDOUT_FILENO, "\033[C", 3);
-        } else if (seq[1] == 'D' && cursorPosition > 0) {
-          cursorPosition--;
-          write(STDOUT_FILENO, "\033[D", 3);
-        } else if (seq[1] == '3') {
+        // Command History
+        if (seq[1] == 'A' || seq[1] == 'B') {
+          char *command = NULL;
+          // Checks if there's a history
+          if (history->size > 0) {
+            if (seq[1] == 'A') { // UP ARROW
+              // If the cursor is the same as the size then the
+              // current buffer is not in history and should be held.
+              if (history->cursor == history->size) {
+                buffer[index] = '\0';
+                hold_command(history, buffer);
+              }
+              if (history->cursor > 0)
+                history->cursor--;
+              command = history->commands[history->cursor];
+            } else if (seq[1] == 'B') { // DOWN ARROW
+              if (history->cursor < history->size)
+                history->cursor++;
+
+              if (history->cursor == history->size) {
+                command = history->holder;
+              } else {
+                command = history->commands[history->cursor];
+              }
+            }
+          }
+
+          if (command != NULL) {
+            if (index != 0 && cursorPosition == index) {
+              char seq[32];
+              snprintf(seq, sizeof(seq), "\033[%dD\033[%dP", index, index);
+              write(STDOUT_FILENO, seq, strlen(seq));
+            }
+            size_t size = strlen(command);
+            write(STDOUT_FILENO, command, size);
+            strcpy(buffer, command);
+            index = size;
+            cursorPosition = size;
+          }
+          continue;
+        }
+        switch (seq[1]) {
+        case 'C':
+          if (cursorPosition < index) {
+            cursorPosition++;
+            write(STDOUT_FILENO, "\033[C", 3);
+          }
+          break;
+        case 'D':
+          if (cursorPosition > 0) {
+            cursorPosition--;
+            write(STDOUT_FILENO, "\033[D", 3);
+          }
+          break;
+        case '3':
           read(STDIN_FILENO, &seq[2], 1);
-          if (seq[2] == '~')
-            del(buffer, &index, &cursorPosition);
+          if (seq[2] == '~') {
+            shell_delete(buffer, &index, &cursorPosition);
+          }
+          break;
         }
       }
       continue;
@@ -124,7 +179,7 @@ char *read_input_raw() {
     }
 
     if (cursorPosition != index) {
-      insert_char(buffer, &index, &cursorPosition, c);
+      shell_insert_char(buffer, &index, &cursorPosition, c);
     } else {
       write(STDOUT_FILENO, &c, 1);
       buffer[index++] = c;
